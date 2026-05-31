@@ -1,0 +1,20 @@
+# config.yaml — paths for the Gini-from-icSHAPE pipeline.
+# Fill in the absolute paths on the Aoraki cluster. The GFFs are the
+# reduced one-transcript-per-gene files (canonical.gff style) for each
+# species; the RASP files are the genome-coordinate BED6 score files.
+#
+# Mouse MUST use the vM25 (mm10/GRCm38) annotation to match the mm10 RASP
+# scores. Do not point this at vM35/vM38 — that is the assembly-mismatch
+# bug the prior pipeline hit.
+
+species:
+  human:
+    gff: /path/to/runs/human_all/extracted_regions/canonical.gff
+    compartments:
+      nucleoplasm: /path/to/data/probing/RASP/human/icSHAPE_hg38_nucl_vivo-score.bed
+      cytoplasm:   /path/to/data/probing/RASP/human/icSHAPE_hg38_cy_invivo-score.bed
+  mouse:
+    gff: /path/to/runs/mouse_m25/extracted_regions/canonical.gff
+    compartments:
+      nucleoplasm: /path/to/data/probing/RASP/mouse/icSHAPE_mm10_nucl_vivo-score.bed
+      cytoplasm:   /path/to/data/probing/RASP/mouse/icSHAPE_mm10_cy_vivo-score.bed
