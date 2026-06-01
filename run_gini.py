@@ -171,21 +171,28 @@ def sort_rasp(rasp_path: Path, work_dir: Path) -> Path:
     return out
 
 
-def run_intersect(region_bed: Path, rasp_sorted: Path) -> list[str]:
-    """bedtools intersect -a region -b rasp -s -wo; return stdout lines.
+def run_intersect(region_bed: Path, rasp_sorted: Path):
+    """bedtools intersect -a region -b rasp -s -wo; yield stdout lines.
 
     -s : require same strand (essential; antisense bleed otherwise)
     -wo: write A, B, and the number of overlapping bases (the clip width)
+
+    Streams stdout line-by-line via a pipe rather than buffering the whole
+    output in memory — mouse full-length intersect output is large.
     """
-    proc = subprocess.run(
+    proc = subprocess.Popen(
         ['bedtools', 'intersect',
          '-a', str(region_bed), '-b', str(rasp_sorted),
          '-s', '-wo'],
-        capture_output=True, text=True, check=True,
+        stdout=subprocess.PIPE, text=True,
     )
-    if proc.stdout:
-        return proc.stdout.splitlines()
-    return []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        yield line
+    proc.stdout.close()
+    ret = proc.wait()
+    if ret != 0:
+        raise subprocess.CalledProcessError(ret, 'bedtools intersect')
 
 
 def _path() -> str:
@@ -260,29 +267,31 @@ def main(argv=None) -> int:
 
         for comp_name, rasp_path in sp.compartments.items():
             rasp_sorted = sort_rasp(rasp_path, args.work_dir)
-            acc_total = core.ScoreAccumulator()
 
-            # One intersect per region; merge into a per-compartment view
-            # then filter+gini. (Kept per-region so a region's parse can't
-            # leak into another; ScoreAccumulator keys on (tid, region).)
+            # Process one region at a time and finalise it before moving on,
+            # so peak memory is bounded by a single region's accumulator
+            # rather than all four held at once. ScoreAccumulator keys on
+            # (tid, region) so regions never cross-contaminate anyway.
+            comp_oor = 0
+            n_gini = n_drop = 0
             for region, region_bed in region_beds.items():
-                lines = run_intersect(region_bed, rasp_sorted)
-                acc = core.parse_intersect_wo(lines)
-                for key, vec in acc.vectors.items():
-                    acc_total.vectors.setdefault(key, []).extend(vec)
-                acc_total.out_of_range_dropped += acc.out_of_range_dropped
+                acc = core.ScoreAccumulator()
+                for line in run_intersect(region_bed, rasp_sorted):
+                    core.parse_intersect_line(line, acc)
+                comp_oor += acc.out_of_range_dropped
+                gini_rows, drops = core.gini_rows_from_accumulator(
+                    acc, sp.name, comp_name, tx_to_gene)
+                all_gini.extend(gini_rows)
+                all_drop.extend(drops)
+                n_gini += len(gini_rows)
+                n_drop += len(drops)
+                del acc  # free before next region
 
-            if acc_total.out_of_range_dropped:
+            if comp_oor:
                 log.warning(f"[{sp.name}/{comp_name}] dropped "
-                            f"{acc_total.out_of_range_dropped} out-of-range "
-                            f"score-bases")
-
-            gini_rows, drops = core.gini_rows_from_accumulator(
-                acc_total, sp.name, comp_name, tx_to_gene)
-            all_gini.extend(gini_rows)
-            all_drop.extend(drops)
-            log.info(f"[{sp.name}/{comp_name}] {len(gini_rows)} gini rows, "
-                     f"{len(drops)} dropouts")
+                            f"{comp_oor} out-of-range score-bases")
+            log.info(f"[{sp.name}/{comp_name}] {n_gini} gini rows, "
+                     f"{n_drop} dropouts")
 
     write_outputs(all_gini, all_drop, args.out_dir)
     return 0

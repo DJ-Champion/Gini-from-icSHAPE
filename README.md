@@ -54,10 +54,20 @@ Includes the Gini anchors from `validation_history.md`
   sub-regions, so it is correct for non-coding transcripts (full only) and
   robust to annotation quirks.
 - **`bedtools intersect -s -wo`**, not `-wa -wb`. The `-wo` overlap-bp column
-  is the clipped overlap width, so expanding to that many per-base
-  observations clips and expands in one step — a RASP row straddling a
-  region boundary contributes only its in-region bases. `-s` is required
-  (antisense reactivity bleed otherwise).
+  is the clipped overlap width, so the count of in-region bases is taken
+  directly — a RASP row straddling a region boundary contributes only its
+  in-region bases. `-s` is required (antisense reactivity bleed otherwise).
+- **Run-length accumulation, not per-base expansion.** Each (transcript,
+  region) holds a `{score: count}` map, not a list of per-base floats.
+  population_gini_weighted computes the identical population Gini directly
+  on the run-length form. This is what keeps mouse (≈9.9M RASP rows) inside
+  memory — peak scales with distinct score values per transcript (bounded by
+  the ~1000 discrete winsorised reactivity levels), not transcript length.
+  Verified equal to the expanded form on the validation anchors and 50
+  random vectors.
+- **bedtools stdout is streamed** line-by-line via a pipe, and regions are
+  processed and finalised one at a time, so the whole intersect output is
+  never resident at once.
 - **subprocess to bedtools**, not pybedtools — keeps the dependency surface
   to gffutils only.
 - **Population Gini, no n-1 correction** — matches the source paper.

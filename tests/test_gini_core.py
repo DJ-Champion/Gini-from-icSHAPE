@@ -51,6 +51,26 @@ def test_gff_to_bed_projection():
     assert end - start == 101   # 1-based inclusive width is end-start+1 = 101
 
 
+def test_gini_weighted_matches_expanded():
+    # The run-length weighted form must equal the expanded list form.
+    import random
+    rng = random.Random(0)
+    for _ in range(50):
+        vals = [round(rng.random(), 3) for _ in range(rng.randint(16, 40))]
+        # build counts map
+        counts = {}
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        a = core.population_gini(vals)
+        b = core.population_gini_weighted(list(counts.items()))
+        assert math.isclose(a, b, rel_tol=1e-12, abs_tol=1e-12)
+
+def test_weighted_anchors():
+    assert math.isclose(core.population_gini_weighted([(0, 1), (1, 1)]), 0.5, rel_tol=1e-12)
+    assert math.isclose(core.population_gini_weighted([(0, 2), (1, 1)]), 2/3, rel_tol=1e-12)
+    assert math.isclose(core.population_gini_weighted([(1, 3)]), 0.0, abs_tol=1e-12)
+
+
 # --- intersect parsing / expansion / clipping ------------------------------
 
 def _wo_line(tid, region, chrom, rs, re_, rasp_s, rasp_e, score, overlap,
@@ -62,11 +82,10 @@ def _wo_line(tid, region, chrom, rs, re_, rasp_s, rasp_e, score, overlap,
 
 def test_expand_uses_overlap_not_full_interval():
     # RASP interval spans 4 bases but only overlaps the region by 2.
-    # -wo's final column (overlap=2) must drive the expansion, not the
-    # RASP width (4). This is the clip-and-expand guarantee.
+    # The -wo overlap column (2) must drive the count, not the RASP width.
     line = _wo_line('ENST1', 'CDS', 'chr1', 100, 102, 98, 102, 0.5, 2)
     acc = core.parse_intersect_wo([line])
-    assert acc.vectors[('ENST1', 'CDS')] == [0.5, 0.5]
+    assert acc.counts[('ENST1', 'CDS')] == {0.5: 2}
 
 def test_expand_multiple_rows_accumulate():
     lines = [
@@ -74,7 +93,7 @@ def test_expand_multiple_rows_accumulate():
         _wo_line('ENST1', 'full', 'chr1', 0, 10, 3, 5, 0.8, 2),
     ]
     acc = core.parse_intersect_wo(lines)
-    assert acc.vectors[('ENST1', 'full')] == [0.2, 0.2, 0.2, 0.8, 0.8]
+    assert acc.counts[('ENST1', 'full')] == {0.2: 3, 0.8: 2}
 
 def test_out_of_range_scores_dropped():
     lines = [
@@ -83,7 +102,7 @@ def test_out_of_range_scores_dropped():
         _wo_line('ENST1', 'CDS', 'chr1', 0, 10, 2, 3, 0.4, 1),   # ok
     ]
     acc = core.parse_intersect_wo(lines)
-    assert acc.vectors[('ENST1', 'CDS')] == [0.4]
+    assert acc.counts[('ENST1', 'CDS')] == {0.4: 1}
     assert acc.out_of_range_dropped == 2
 
 
@@ -91,10 +110,10 @@ def test_out_of_range_scores_dropped():
 
 def test_filter_n_valid_cutoff():
     acc = core.ScoreAccumulator()
-    acc.add(('ENST_small', 'CDS'), 0.5, 15)   # exactly 15 -> dropped (> needed)
-    acc.add(('ENST_ok', 'CDS'), 0.5, 16)      # 16 -> kept, but zero-sum check
-    # make ENST_ok non-zero-sum with variation
-    acc.vectors[('ENST_ok', 'CDS')] = [0.1] * 8 + [0.9] * 8
+    acc.add(('ENST_small', 'CDS'), 0.5, 15)   # exactly 15 -> dropped (need >15)
+    # ENST_ok: 16 obs with variation so it's not zero-sum
+    acc.add(('ENST_ok', 'CDS'), 0.1, 8)
+    acc.add(('ENST_ok', 'CDS'), 0.9, 8)
     gini, drops = core.gini_rows_from_accumulator(
         acc, 'human', 'nucleoplasm', {'ENST_small': 'G1', 'ENST_ok': 'G2'})
     kept = {r.transcript_id for r in gini}
