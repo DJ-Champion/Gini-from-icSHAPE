@@ -70,6 +70,38 @@ def population_gini(scores: list[float]) -> float:
     return (n + 1 - 2 * cumsum_of_cumsum / total) / n
 
 
+def population_gini_weighted(pairs: list[tuple[float, int]]) -> float:
+    """Population Gini on a run-length-encoded multiset of scores.
+
+    `pairs` is a list of (value, count): the same scores as
+    population_gini([...]) would take, but with repeats collapsed to a
+    count. This is mathematically identical to expanding each (value,
+    count) into `count` copies and calling population_gini — but it never
+    instantiates the repeats, so memory scales with the number of distinct
+    RASP intervals per (transcript, region), not the number of bases.
+
+    Derivation: within a run of `c` copies of value v, sitting on a prefix
+    of summed-value P, the cumulative sums S_i are P+v, P+2v, ..., P+cv, so
+    the run contributes  c*P + v*c*(c+1)/2  to sum(S). Total count n and
+    grand total S[-1] are the weighted sums.
+
+    Same contract as population_gini: assumes total > 0 (caller filters
+    zero-sum) and n > 0.
+    """
+    ps = sorted(pairs)
+    n = 0
+    total = 0.0
+    for v, c in ps:
+        n += c
+        total += v * c
+    cumsum_of_cumsum = 0.0
+    prefix = 0.0
+    for v, c in ps:
+        cumsum_of_cumsum += c * prefix + v * c * (c + 1) / 2.0
+        prefix += v * c
+    return (n + 1 - 2 * cumsum_of_cumsum / total) / n
+
+
 # ---------------------------------------------------------------------------
 # GFF region extraction
 # ---------------------------------------------------------------------------
@@ -159,12 +191,75 @@ def write_region_bed(records: Iterable[RegionBedRecord], path: Path) -> int:
 
 @dataclass
 class ScoreAccumulator:
-    """Per-base score observations keyed by (transcript_id, region)."""
-    vectors: dict[tuple[str, str], list[float]] = field(default_factory=dict)
+    """Run-length per-base score observations keyed by (transcript_id, region).
+
+    Instead of materialising `count` copies of each score (which blows up
+    memory for large RASP files — a single intersect row can cover dozens
+    of bases, and there are millions of rows), we hold a {score: total_count}
+    map per key. This is exactly the multiset the per-base vector would be,
+    just run-length encoded. population_gini_weighted consumes it directly.
+    """
+    counts: dict[tuple[str, str], dict[float, int]] = field(default_factory=dict)
     out_of_range_dropped: int = 0
 
     def add(self, key: tuple[str, str], score: float, count: int) -> None:
-        self.vectors.setdefault(key, []).extend([score] * count)
+        m = self.counts.setdefault(key, {})
+        m[score] = m.get(score, 0) + count
+
+    def merge_from(self, other: 'ScoreAccumulator') -> None:
+        """Fold another accumulator into this one (used if combining regions)."""
+        for key, m in other.counts.items():
+            dst = self.counts.setdefault(key, {})
+            for score, c in m.items():
+                dst[score] = dst.get(score, 0) + c
+        self.out_of_range_dropped += other.out_of_range_dropped
+
+
+def parse_intersect_line(
+    line: str,
+    acc: ScoreAccumulator,
+    region_bed_cols: int = 6,
+    rasp_cols: int = 6,
+) -> None:
+    """Parse one `bedtools intersect -a region -b rasp -s -wo` line into acc.
+
+    With `-a` having `region_bed_cols` columns and `-b` having `rasp_cols`
+    columns, each `-wo` line is:
+
+        [region 6 cols] [rasp 6 cols] [overlap_bp]
+
+    so the RASP score is field (region_bed_cols + 4) and the overlap base
+    count is the final field. The region name (col 4 of -a) is
+    'transcript_id|region'. The overlap_bp is the *clipped* overlap width
+    (already the in-region base count), so it is used directly as the
+    run-length count — clip-and-expand in one step, with no expansion.
+
+    Scores outside [0, 1] (or unparseable) are dropped; their base count is
+    added to acc.out_of_range_dropped for the caller to log.
+    """
+    line = line.rstrip('\n')
+    if not line:
+        return
+    f = line.split('\t')
+    name_idx = 3
+    score_idx = region_bed_cols + 4
+    overlap_idx = region_bed_cols + rasp_cols
+    raw_score = f[score_idx]
+    overlap_bp = int(f[overlap_idx])
+    try:
+        score = float(raw_score)
+    except ValueError:
+        acc.out_of_range_dropped += overlap_bp
+        return
+    if not (0.0 <= score <= 1.0):
+        acc.out_of_range_dropped += overlap_bp
+        return
+    name = f[name_idx]
+    if '|' in name:
+        tid, region = name.split('|', 1)
+    else:
+        tid, region = name, 'full'
+    acc.add((tid, region), score, overlap_bp)
 
 
 def parse_intersect_wo(
@@ -172,48 +267,15 @@ def parse_intersect_wo(
     region_bed_cols: int = 6,
     rasp_cols: int = 6,
 ) -> ScoreAccumulator:
-    """Parse `bedtools intersect -a region.bed -b rasp.bed -s -wo` output.
+    """Iterable convenience wrapper around parse_intersect_line.
 
-    With `-a` having `region_bed_cols` columns and `-b` having `rasp_cols`
-    columns, each `-wo` line is:
-
-        [region 6 cols] [rasp 6 cols] [overlap_bp]
-
-    so the RASP score is field index (region_bed_cols + 4) and the overlap
-    base count is the final field. The region name (col 4 of -a) is
-    'transcript_id|region'. We expand each line to `overlap_bp` copies of
-    the RASP score (this is the clip-and-expand: overlap_bp is already the
-    clipped overlap, not the full RASP interval width).
-
-    Scores outside [0, 1] are dropped and counted (logged by the caller).
+    Builds and returns a fresh ScoreAccumulator. The driver streams via
+    parse_intersect_line directly to avoid holding all lines at once; this
+    form is kept for tests and small in-memory uses.
     """
     acc = ScoreAccumulator()
-    name_idx = 3                       # col 4 of region BED
-    score_idx = region_bed_cols + 4    # col 5 of RASP block
-    overlap_idx = region_bed_cols + rasp_cols  # final column
-
     for line in lines:
-        line = line.rstrip('\n')
-        if not line:
-            continue
-        f = line.split('\t')
-        name = f[name_idx]
-        raw_score = f[score_idx]
-        overlap_bp = int(f[overlap_idx])
-        try:
-            score = float(raw_score)
-        except ValueError:
-            acc.out_of_range_dropped += overlap_bp
-            continue
-        if not (0.0 <= score <= 1.0):
-            acc.out_of_range_dropped += overlap_bp
-            continue
-        if '|' in name:
-            tid, region = name.split('|', 1)
-        else:
-            # Shouldn't happen given write_region_bed, but stay robust.
-            tid, region = name, 'full'
-        acc.add((tid, region), score, overlap_bp)
+        parse_intersect_line(line, acc, region_bed_cols, rasp_cols)
     return acc
 
 
@@ -261,18 +323,19 @@ def gini_rows_from_accumulator(
     gini_rows: list[GiniRow] = []
     dropouts: list[DropoutRow] = []
 
-    for (tid, region), scores in acc.vectors.items():
+    for (tid, region), counts in acc.counts.items():
         gene_id = tx_to_gene.get(tid, '')
-        n = len(scores)
+        n = sum(counts.values())
         if n <= VALID_CUTOFF:
             dropouts.append(DropoutRow(
                 tid, species, compartment, region, 'n_valid<=15', n))
             continue
-        if sum(scores) == 0:
+        total = sum(v * c for v, c in counts.items())
+        if total == 0:
             dropouts.append(DropoutRow(
                 tid, species, compartment, region, 'zero_sum', n))
             continue
-        g = population_gini(scores)
+        g = population_gini_weighted(list(counts.items()))
         gini_rows.append(GiniRow(
             transcript_id=tid,
             gene_id=gene_id,
