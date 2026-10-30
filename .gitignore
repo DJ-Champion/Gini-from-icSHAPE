@@ -3,7 +3,6 @@ human/
 mouse/
 probingFiles/
 hpa_hek293/
-RASP/
 RASP/*
 !RASP/config_rasp_v2.yaml
 runs/

@@ -1,0 +1,9 @@
+# RASP v2 (rasp2.zhanglab.net) "raw" HEK293 icSHAPE files, Sun et al. 2019. Human only.
+species:
+  human:
+    gff: human/canonical_human.gff
+    compartments:
+      nucleoplasm_vivo_v2:  RASP/nucleoplasm_vivoNAIN3-score.bed
+      cytoplasm_vivo_v2:    RASP/cytoplasm_vivoNAIN3-score.bed
+      nucleoplasm_vitro_v2: RASP/nucleoplasm_vitroNAIN3-score.bed
+      cytoplasm_vitro_v2:   RASP/cytoplasm_vitroNAIN3-score.bed
