@@ -9,12 +9,12 @@
 
 species:
   human:
-    gff: /path/to/runs/human_all/extracted_regions/canonical.gff
+    gff: human/canonical_human.gff
     compartments:
-      nucleoplasm: /path/to/data/probing/RASP/human/icSHAPE_hg38_nucl_vivo-score.bed
-      cytoplasm:   /path/to/data/probing/RASP/human/icSHAPE_hg38_cy_invivo-score.bed
+      nucleoplasm: human/icSHAPE_hg38_nucl_vivo-score.bed
+      cytoplasm:   human/icSHAPE_hg38_cy_invivo-score.bed
   mouse:
-    gff: /path/to/runs/mouse_m25/extracted_regions/canonical.gff
+    gff: mouse/canonical_mouse_m25.gff
     compartments:
-      nucleoplasm: /path/to/data/probing/RASP/mouse/icSHAPE_mm10_nucl_vivo-score.bed
-      cytoplasm:   /path/to/data/probing/RASP/mouse/icSHAPE_mm10_cy_vivo-score.bed
+      nucleoplasm: mouse/icSHAPE_mm10_nucl_vivo-score.bed
+      cytoplasm:   mouse/icSHAPE_mm10_cy_vivo-score.bed

@@ -1,0 +1,27 @@
+# data & outputs (keep the small configs)
+human/
+mouse/
+probingFiles/
+hpa_hek293/
+RASP/
+RASP/*
+!RASP/config_rasp_v2.yaml
+runs/
+*.tar
+*.zip
+*.bed
+*.bed.gz
+*.bigWig
+*.bw
+*.gff
+*.db
+*.csv
+*.tsv
+# papers & supplementary files (copyrighted)
+*.pdf
+*.xls
+*.xlsx
+*.docx
+# python
+__pycache__/
+*.pyc
